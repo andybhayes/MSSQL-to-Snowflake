@@ -1,0 +1,45 @@
+import boto3
+import polars as pl
+from io import BytesIO
+import logging
+from botocore.exceptions import ClientError
+
+
+access_key=""
+access_secret=""
+
+
+bucket_name = "mssqlsnowflake"
+folder_path = ""  # Folder within the bucket
+
+def upload_file(file_name, bucket, object_name=None):
+    """Upload a file to an S3 bucket
+
+    :param file_name: File to upload
+    :param bucket: Bucket to upload to
+    :param object_name: S3 object name. If not specified, the file_name is used
+    :return: True if file was uploaded, else False
+    """
+    # If S3 object_name was not specified, use file_name's base name
+    if object_name is None:
+        object_name = os.path.join(folder_path, os.path.basename(file_name))  # Specify folder and file name
+
+    # Initialize S3 client
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=access_key,
+        aws_secret_access_key=access_secret
+    )
+
+    # Upload the file
+    try:
+        response = s3_client.upload_file(file_name, bucket, object_name)
+        print("Upload Successful")
+    except ClientError as e:
+        logging.error(e)
+        return False
+    return True
+
+# Example call to upload the file
+file_name = r"question_2021.parquet"  # Replace this with your actual file path"
+upload_file(file_name, bucket_name)
