@@ -1,0 +1,56 @@
+import snowflake.connector
+import os
+
+# AWS credentials
+access_key=""
+access_secret=""
+
+
+# Snowflake Configuration
+sf_account=""
+sf_user = ''
+sf_password = ''
+sf_warehouse = 'COMPUTE_WH'
+sf_database = 'QUESTIONS'
+sf_schema = 'ALL_TABLES'
+sf_stage = 'QUESTION_2021'
+sf_table = 'CONSOLIDATED_RESEARCH_QUESTIONS'
+s3_bucket = ''
+s3_key = 'question_2021.parquet'  
+
+
+# Connect to Snowflake
+try:
+    sf_conn = snowflake.connector.connect(
+        user=sf_user,
+        password=sf_password,
+        account=sf_account,
+        warehouse=sf_warehouse,
+        database=sf_database,
+        schema=sf_schema
+    )
+    print("Connected to Snowflake successfully!")
+except Exception as e:
+    print(f"Connection to Snowflake failed: {e}")
+    exit()
+
+# Construct and execute the Snowflake COPY INTO command
+copy_query = f"""
+    COPY INTO {sf_table}
+    FROM '{s3_bucket}/{s3_key}'
+    FILE_FORMAT = (TYPE = 'PARQUET')
+    MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+    CREDENTIALS = (AWS_KEY_ID='{access_key}' AWS_SECRET_KEY='{access_secret}');
+"""
+
+try:
+    sf_cursor = sf_conn.cursor()
+    sf_cursor.execute(copy_query)
+    sf_conn.commit()  # Snowflake auto-commits, this is optional
+    print("Data successfully copied into Snowflake staging table.")
+    sf_cursor.close()
+    sf_conn.close()
+
+except Exception as e:
+    print(f"Error copying data into Snowflake: {e}")
+    exit()
