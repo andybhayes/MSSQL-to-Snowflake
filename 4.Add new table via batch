@@ -1,0 +1,140 @@
+#This is run after the first table is uploaded into snowflake
+#code does batch pull of 10 going off 10 ResponseId's,
+#It records the last RsponseID and timestamp then saves that to a json file in s3
+#upon the next pull whe triggered it does the next 10 rows
+
+
+import pyodbc
+import polars as pl
+import boto3
+import json
+from io import BytesIO
+from datetime import datetime
+import tempfile
+import os
+
+#MSSQL login
+server_name = ''
+database_name = ''
+username = ''
+password = ''
+table_name = ''
+
+connection_string = f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server_name};DATABASE={database_name};UID={username};PWD={password};Trusted_Connection=no;'
+
+access_secret=""
+access_key = 'P'
+aws_region = 'eu-west-2'
+bucket_name = 'e'
+lastpull_file = 'lastpull.json'
+s3_key_2021 = 'question_2021.parquet'
+s3_key_2022 = 'question_2022.parquet'
+
+
+metadata_file = "lastpull_metadata.json"
+# Initialize S3 client
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=access_key,
+    aws_secret_access_key=access_secret
+)
+
+# Function to get the last pull metadata from S3 (if it exists)
+def get_last_pull_metadata(bucket, key):
+    try:
+        response = s3_client.get_object(Bucket=bucket, Key=key)
+        metadata = json.loads(response['Body'].read())
+        return metadata['last_response_id'], metadata['last_successful_pull']
+    except Exception as e:
+        print(f"Error fetching metadata: {e}")
+        return None, None
+
+def update_last_pull_metadata(bucket, key, last_response_id, last_successful_pull):
+    metadata = {
+        "last_response_id": last_response_id,
+        "last_successful_pull": last_successful_pull.isoformat()
+    }
+    s3_client.put_object(Bucket=bucket, Key=key, Body=json.dumps(metadata))
+    print("Updated last pull metadata successfully.")
+
+def upload_to_s3(df, bucket, key):
+    # Create a temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as temp_file:
+        # Write DataFrame to the temporary Parquet file
+        df.write_parquet(temp_file.name)
+        temp_file_path = temp_file.name
+
+    # Upload the temporary file to S3
+    try:
+        s3_client.upload_file(temp_file_path, bucket, key)
+        print(f"Successfully uploaded to S3: {bucket}/{key}")
+    except Exception as e:
+        print(f"Error uploading to S3: {e}")
+    finally:
+        # Remove the temporary file
+        os.remove(temp_file_path)
+
+def extract_transform_data(conn, table_name, last_response_id):
+    cursor = conn.cursor()
+
+    query = f"SELECT TOP 10 ResponseID, Question1, Question2, Age, ResponseDate FROM {table_name} WHERE ResponseID > ? ORDER BY ResponseID;"
+
+    try:
+        cursor.execute(query, last_response_id)
+        results = cursor.fetchall()
+
+        if not results:
+            return None, last_response_id  # No new data
+
+        # Get column names
+        columns = ['ResponseID', 'Q1', 'Q2', 'Age', 'ResponseDate']
+
+        # Clean up the data
+        cleaned_results = [
+            tuple(item.strip() if isinstance(item, str) else item for item in row)
+            for row in results
+        ]
+
+        # Create DataFrame
+        df = pl.DataFrame(cleaned_results, schema=columns, orient="row")
+        df = df.with_columns([
+            pl.col('ResponseDate').cast(pl.Date).alias('Date'),
+            pl.lit(2021).alias('Survey_Year').cast(pl.Int16)
+        ])
+
+        return df, max(row[0] for row in results)  # Return the new last_response_id
+    except Exception as e:
+        print(f"Error while extracting data: {e}")
+        return None, last_response_id
+    finally:
+        cursor.close()
+
+def main():
+    # Get last pull metadata from S3
+    last_response_id, last_successful_pull = get_last_pull_metadata(bucket_name, metadata_file)
+    if last_response_id is None:
+        last_response_id = 0  # Start from the beginning if there's no metadata
+
+
+    # Connect to MSSQL
+    conn = pyodbc.connect(connection_string)
+    print("Connection successful!")
+
+    # Process data once
+    df, new_last_response_id = extract_transform_data(conn, 'question_2021', last_response_id)
+
+    if df is None or df.is_empty():
+        print("No new data to pull.")
+    else:
+        # Upload the DataFrame to S3 using the updated function
+        upload_to_s3(df, bucket_name, f'2022/question_2022_{new_last_response_id}.parquet')
+
+        # Update the last pull metadata in S3
+        last_successful_pull = datetime.now()
+        update_last_pull_metadata(bucket_name, metadata_file, new_last_response_id, last_successful_pull)
+
+    # Close MSSQL connection
+    conn.close()
+
+if __name__ == "__main__":
+    main()
