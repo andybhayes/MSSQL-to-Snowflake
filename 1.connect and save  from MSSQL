@@ -1,60 +1,81 @@
 import pyodbc
 import polars as pl
 import datetime
+from typing import Optional
 
-# Define your connection parameters
-server_name = ''
-database_name = ''
-username = ''
-password = ''
-table_name = 'question_2021'
+def create_connection(server_name: str, database_name: str, username: str, password: str) -> Optional[pyodbc.Connection]:
+    """Create a database connection with error handling."""
+    connection_string = (
+        f'DRIVER={{ODBC Driver 17 for SQL Server}};'
+        f'SERVER={server_name};'
+        f'DATABASE={database_name};'
+        f'UID={username};'
+        f'PWD={password};'
+        f'Trusted_Connection=no;'
+    )
+    
+    try:
+        conn = pyodbc.connect(connection_string)
+        print("Connection successful!")
+        return conn
+    except pyodbc.Error as e:
+        print(f"Connection failed: {e}")
+        return None
 
+def process_data(df: pl.DataFrame) -> pl.DataFrame:
+    """Process the dataframe with the required transformations."""
+    return (df
+        .with_columns(pl.col("ResponseDate").cast(pl.Date).alias("Date"))
+        .with_columns(pl.lit(2021).alias("Survey_Year").cast(pl.Int16))
+        .drop("ResponseDate")
+        .unique()
+    )
 
-# Create the connection string
-connection_string = f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server_name};DATABASE={database_name};UID={username};PWD={password};Trusted_Connection=no;'
+def main(
+    server_name: str,
+    database_name: str,
+    username: str,
+    password: str,
+    table_name: str = "dbo.question_2022"
+) -> None:
+    """Main function to handle the ETL process."""
+    
+    # Create connection
+    conn = create_connection(server_name, database_name, username, password)
+    if not conn:
+        return
+    
+    try:
+        # Fetch data
+        query = f"SELECT * FROM {table_name}"
+        df = pl.read_database(query=query, connection=conn)
+        
+        # Process data
+        df = process_data(df)
+        print("Processed DataFrame:")
+        print(df)
+        
+        # Save to parquet
+        output_filename = f"{table_name.replace('dbo.', '')}.parquet"
+        df.write_parquet(output_filename)
+        print(f"Data successfully written to {output_filename}")
+        
+        # Record last successful pull
+        last_successful_pull = datetime.datetime.now()
+        print(f"Last successful pull: {last_successful_pull}")
+        
+    except Exception as e:
+        print(f"Error during data processing: {e}")
+    
+    finally:
+        conn.close()
+        print("Connection closed")
 
-# Establish the connection
-try:
-    conn = pyodbc.connect(connection_string)
-    print("Connection successful!")
-except pyodbc.Error as e:
-    print(f"Connection failed: {e}")
-    exit()
-
-# Create a cursor from the connection
-cursor = conn.cursor()
-
-# Correct SQL query to select from the table
-query = f"SELECT * from {table_name};"
-
-try:
-    # Execute the query
-    cursor.execute(query)
-    results = cursor.fetchall()
-
-    # Get the column names from cursor description
-    columns = [column[0] for column in cursor.description]
-
-    # Clean up the data by stripping whitespace from each string element
-    cleaned_results = [
-        tuple(item.strip() if isinstance(item, str) else item for item in row)
-        for row in results
-    ]
-
-    # Create the DataFrame with the cleaned results
-    df = pl.DataFrame(cleaned_results, schema=columns, orient="row")
-    df = df.with_columns(pl.col("ResponseDate").cast(pl.Date).alias("Date"))
-    df = df.with_columns(pl.lit(2021).alias("Survey_Year").cast(pl.Int16))
-    df = df.drop("ResponseDate")
-    print(df)
-    cursor.execute(table_name)  # Use tuple to pass both parameters
-    conn.commit()  # Commit the changes
-    print("LastUpdated timestamp and TableName inserted successfully!")
-    df.write_parquet(f"{table_name}.parquet")
-
-except Exception as e:
-    print(f"Error while fetching data: {e}")
-
-finally:
-    cursor.close()
-    conn.close()
+if __name__ == "__main__":
+    # Replace these with your actual credentials
+    SERVER_NAME = "your_server"
+    DATABASE_NAME = "your_database"
+    USERNAME = "your_username"
+    PASSWORD = "your_password"
+    
+    main(SERVER_NAME, DATABASE_NAME, USERNAME, PASSWORD)
